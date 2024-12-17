@@ -1,0 +1,8 @@
+username: xunfei
+password: xunfei
+host: 127.0.0.1
+send_port: 54321
+report_port: 54322
+is_transcribe: false
+fps: 10
+quality: 10
