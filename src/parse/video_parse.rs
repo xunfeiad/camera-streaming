@@ -1,12 +1,6 @@
 use crate::rabbitmq::RabbitmqConn;
-use crate::{
-    config::Configuration,
-    error::{CaptureError, Result},
-    set_ip_map_true, Auth, IPMapFlag,
-};
+use crate::{config::Configuration, error::{CaptureError, Result}, Auth, IPMapFlag, error};
 use amqprs::callbacks::DefaultChannelCallback;
-use amqprs::channel::{BasicPublishArguments, Channel, ConsumerMessage};
-use amqprs::BasicProperties;
 use chrono::Local;
 use opencv::{
     core::{Mat, Size, Vector},
@@ -16,12 +10,11 @@ use opencv::{
 };
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::mpsc::UnboundedReceiver;
+use amqprs::connection::Connection;
 use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::Mutex,
 };
 
 const BASE_RESPONSE: &[u8] =
@@ -61,13 +54,10 @@ impl VideoParse {
         &self,
         stream: &mut TcpStream,
         ip_map: Arc<RwLock<IPMapFlag>>,
-        rabbitmq: Arc<RabbitmqConn>, // channel: Arc<Channel>,
-                                     // props: BasicProperties,
-                                     // publish_args: BasicPublishArguments,
+        rabbitmq: Arc<RabbitmqConn>,
+        conn: Arc<Connection>
     ) -> Result<()> {
-        // Validate auth.
         // rabbitmq
-        let conn = rabbitmq.open_connection().await?;
         let ch = conn.open_channel(None).await?;
         ch.register_callback(DefaultChannelCallback).await?;
         let (publish_args, props) = rabbitmq
@@ -83,8 +73,8 @@ impl VideoParse {
         let config: Configuration = serde_json::from_str(std::str::from_utf8(&buf)?)?;
 
         let mut writer = self
-            .set_video_writer(stream.peer_addr().unwrap(), &config)
-            .ok_or(CaptureError::NotTranscribe)?;
+            .set_video_writer(stream.peer_addr().unwrap(), &config);
+
         log::info!("New connection from {}", stream.peer_addr().unwrap());
 
         loop {
@@ -109,26 +99,32 @@ impl VideoParse {
             let ip = self
                 .get_ip_map_flag(ip_map.clone(), &stream.peer_addr()?.ip().to_string())
                 .await;
-            println!("{:?}", ip_map);
-            println!("{:?}", ip);
+
             if ip == true {
                 rabbitmq
                     .send(&ch, publish_args.clone(), props.clone(), buf.clone())
                     .await?;
             }
 
-            // Encode and write
-            let buf = Mat::from_slice(&buf)?;
 
-            let size = Size::new(self.frame_size.unwrap().0, self.frame_size.unwrap().1);
+            if let Some(ref mut writer) = writer{
+                // Encode and write
+                let buf = Mat::from_slice(&buf)?;
 
-            let frame = imgcodecs::imdecode(&buf, imgcodecs::IMREAD_COLOR)?;
-            if frame.size()?.width != size.width || frame.size()?.height != size.height {
-                continue;
+                let size = Size::new(self.frame_size.unwrap().0, self.frame_size.unwrap().1);
+
+                let frame = imgcodecs::imdecode(&buf, imgcodecs::IMREAD_COLOR)?;
+                if frame.size()?.width != size.width || frame.size()?.height != size.height {
+                    continue;
+                }
+
+                writer.write(&frame)?;
             }
-            writer.write(&frame)?;
+
         }
-        writer.release()?;
+        if let Some(ref mut writer) = writer{
+            writer.release()?;
+        }
         Ok(())
     }
 
@@ -139,6 +135,7 @@ impl VideoParse {
         let f = self.frame_size.unwrap();
         let fourcc = VideoWriter::fourcc(p.0, p.1, p.2, p.3).ok()?;
         let frame_size = Size::new(f.0, f.1);
+
         let is_transcribe = match config.is_transcribe.to_lowercase().as_str() {
             "true" => true,
             "false" => false,
@@ -193,33 +190,42 @@ impl VideoParse {
         Ok(())
     }
 
+    pub async fn set_ip_map_true(&self, ip_map: Arc<RwLock<IPMapFlag>>, ip_addr: String) -> error::Result<()> {
+        let mut ip_map = ip_map.write().await;
+        let _ = *ip_map
+            .entry(ip_addr)
+            .and_modify(|x| *x = true)
+            .or_insert(true);
+        Ok(())
+    }
+
     pub async fn send_to_web(
         &self,
-        stream: &mut TcpStream,
+        mut stream: &mut TcpStream,
         ip_map: Arc<RwLock<IPMapFlag>>,
         rabbitmq_conn: Arc<RabbitmqConn>,
+        conn: Arc<Connection>
     ) -> Result<()> {
-        println!("{:?}", ip_map);
+        read_stream_data(&mut stream).await?;
         let ip_str = stream.peer_addr()?.ip().to_string();
-        set_ip_map_true(ip_map, ip_str.to_string()).await?;
+        self.set_ip_map_true(ip_map, ip_str.to_string()).await?;
         stream.write_all(BASE_RESPONSE).await?;
-        let conn = rabbitmq_conn.open_connection().await?;
         let ch = conn.open_channel(None).await?;
         rabbitmq_conn.clear_spec_queue(&ch, &ip_str).await?;
         ch.register_callback(DefaultChannelCallback).await?;
         let mut consumer_message = rabbitmq_conn.get_rx(&ch, ip_str).await?;
         while let Some(msg) = consumer_message.recv().await {
             if let Some(msg) = msg.content {
-                // Construct HTTP frame and send it to the peer
+
                 let header = format!(
                     "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
                     msg.len()
                 );
                 let packet = [header.as_bytes(), msg.as_slice()].concat();
-                // 发送数据
+
                 if let Err(e) = stream.write_all(&packet).await {
                     eprintln!("Failed to send video frame: {}", e);
-                    break; // 错误发生时退出循环
+                    break;
                 }
             }
         }
@@ -232,6 +238,12 @@ pub fn to_u8(auth: String) -> Auth {
     let bytes = auth.as_bytes();
     arr[..bytes.len()].copy_from_slice(bytes);
     arr
+}
+
+pub async fn read_stream_data(stream: &mut TcpStream) -> Result<()>{
+    let mut buf = [0u8;1000];
+    stream.peek(&mut buf).await?;
+    Ok(())
 }
 
 #[test]

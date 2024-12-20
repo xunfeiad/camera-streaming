@@ -1,7 +1,7 @@
 use ::capture::{config::Configuration, error::Result, parse::video_parse};
 use capture::rabbitmq::RabbitmqConn;
 use env_logger::Env;
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[tokio::main(worker_threads = 10)]
@@ -22,17 +22,20 @@ async fn main() -> Result<()> {
         "guest".to_string(),
         "guest".to_string(),
     ));
-    let ip_map_video = ip_map.clone();
+
+    let conn = Arc::new(rabbitmq.open_connection().await?);
     let task_video = capture::task::video_task::start_video_task(
         &video_server_addr,
-        ip_map_video,
+        ip_map.clone(),
         rabbitmq.clone(),
+        conn.clone()
     );
 
     let task_server = capture::task::web_server_task::start_web_server_task(
         &web_server_addr,
-        Arc::clone(&ip_map),
+        ip_map.clone(),
         rabbitmq.clone(),
+        conn.clone()
     );
     tokio::join!(task_video, task_server);
     Ok(())

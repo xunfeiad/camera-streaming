@@ -6,9 +6,7 @@ use amqprs::channel::{
 };
 use amqprs::connection::{Connection, OpenConnectionArguments};
 use amqprs::BasicProperties;
-use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct RabbitmqConn {
@@ -63,7 +61,7 @@ impl RabbitmqConn {
         data: Vec<u8>,
     ) -> Result<()> {
         ch.basic_publish(props, data, publish_args).await?;
-        log::info!("send data successfully.");
+        // log::info!("send data successfully.");
         Ok(())
     }
 
