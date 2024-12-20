@@ -17,6 +17,7 @@ clap = { version = "4.5.20", features = ["derive"] }
 async-channel = "2.3.1"
 serde_json = "1.0.132"
 amqprs = "2.1.0"
+http_parse = "2.0.1"
 
 
 [[bin]]
@@ -26,7 +27,3 @@ path="bin/server.rs"
 [[bin]]
 name="client"
 path = "bin/client.rs"
-
-[[bin]]
-name = "send_to_web"
-path = "bin/send_to_web.rs"

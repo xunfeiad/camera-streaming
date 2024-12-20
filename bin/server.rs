@@ -1,6 +1,7 @@
-use ::capture::{config::Configuration, error::Result, parse::video_parse};
+use ::capture::{config::Configuration, error::Result};
 use capture::rabbitmq::RabbitmqConn;
 use env_logger::Env;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -15,7 +16,7 @@ async fn main() -> Result<()> {
     let video_server_addr = format!("0.0.0.0:{}", &configuration.send_port);
     let web_server_addr = format!("0.0.0.0:{}", &configuration.report_port);
 
-    let ip_map = Arc::new(RwLock::new(video_parse::init_ips()));
+    let label_map = Arc::new(RwLock::new(HashMap::new()));
     let rabbitmq = Arc::new(RabbitmqConn::new(
         "localhost".to_string(),
         5672,
@@ -26,16 +27,16 @@ async fn main() -> Result<()> {
     let conn = Arc::new(rabbitmq.open_connection().await?);
     let task_video = capture::task::video_task::start_video_task(
         &video_server_addr,
-        ip_map.clone(),
+        label_map.clone(),
         rabbitmq.clone(),
-        conn.clone()
+        conn.clone(),
     );
 
     let task_server = capture::task::web_server_task::start_web_server_task(
         &web_server_addr,
-        ip_map.clone(),
+        label_map.clone(),
         rabbitmq.clone(),
-        conn.clone()
+        conn.clone(),
     );
     tokio::join!(task_video, task_server);
     Ok(())

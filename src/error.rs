@@ -24,12 +24,14 @@ pub enum CaptureError {
     SerdeJsonError(#[from] serde_json::Error),
     #[error("Utf8Error")]
     Utf8Error(#[from] std::str::Utf8Error),
-    #[error("IP not in server database")]
-    IPNotInServerDatabase,
     #[error("Send stream failed")]
     SendStreamFailed(#[from] async_channel::SendError<Vec<u8>>),
     #[error("Rabbitmq error:{0}")]
     RabbitmqError(#[from] amqprs::error::Error),
+    #[error("Empty label name")]
+    EmptyLabelName,
     #[error("Rabbitmq Channel Not initialized.")]
     NotInitializedRabbitmqChannel,
+    #[error("Duplicated label")]
+    DuplicatedLabelError,
 }

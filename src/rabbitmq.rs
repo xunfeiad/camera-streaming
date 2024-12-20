@@ -112,7 +112,6 @@ impl RabbitmqConn {
     }
     pub async fn clear_spec_queue(&self, ch: &Channel, queue_name: &str) -> Result<()> {
         let purge_args = QueuePurgeArguments::new(queue_name);
-
         // 清空队列
         let _ = ch.queue_purge(purge_args).await?;
         Ok(())

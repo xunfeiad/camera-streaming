@@ -14,8 +14,6 @@ async fn main() -> Result<()> {
         panic!("Unable to open default camera!");
     }
 
-    // Connect to `Server`
-
     let stream = TcpStream::connect((cli.host.clone(), cli.send_port)).await?;
     let video = VideoParse::new(None, None, None);
     video.encode(stream, cap, cli).await?;

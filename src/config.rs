@@ -47,6 +47,9 @@ pub struct Configuration {
         help = "The quality of the video"
     )]
     pub quality: i32,
+
+    #[arg(short = 'l', long, help = "The identification of the camera")]
+    pub label: Option<String>,
 }
 
 impl TryFrom<String> for Configuration {
