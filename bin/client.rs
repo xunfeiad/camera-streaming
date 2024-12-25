@@ -1,6 +1,6 @@
-use ::capture::error::Result;
-use ::capture::parse::video_parse::VideoParse;
-use capture::config::Configuration;
+use ::camera_streaming::error::Result;
+use ::camera_streaming::parse::video_parse::VideoParse;
+use camera_streaming::config::Configuration;
 use clap::Parser;
 use opencv::{prelude::*, videoio};
 use tokio::net::TcpStream;

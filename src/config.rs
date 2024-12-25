@@ -13,6 +13,7 @@ use std::path::Path;
 #[command(version, about, long_about = None)]
 #[command(name = "Client")]
 #[command(version = "0.0.1")]
+#[non_exhaustive]
 pub struct Configuration {
     #[arg(short = 'u', long, help = "The username of authentication")]
     pub username: Option<String>,
