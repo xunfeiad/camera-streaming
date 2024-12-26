@@ -199,23 +199,31 @@ impl VideoParse {
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
         if let Some(ref label) = parse_label_data(&s) {
             {
-                let mut label_map = label_map.write().await;
-                label_map
-                    .join_label_to_server(label.to_string(), None)
-                    .await?;
+                {
+                    let mut label_map = label_map.write().await;
+                    label_map.set_flag_to_true(label).await?;
+                    println!("set falg to true successfully,{:?}, {:?}",label,label_map)
+                }
                 stream.write_all(BASE_RESPONSE).await?;
-                let queue = &(*label_map.get_queue(label)?);
-                while let Ok(msg) = queue.recv().await {
-                    let header = format!(
-                        "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                        msg.len()
-                    );
-                    let packet = [header.as_bytes(), msg.as_slice()].concat();
+                {
+                    let mut label_map = label_map.read().await;
+                    let queue = &(*label_map.get_queue(label)?);
+                    while let Ok(msg) = queue.recv().await {
+                        let header = format!(
+                            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                            msg.len()
+                        );
+                        let packet = [header.as_bytes(), msg.as_slice()].concat();
 
-                    if let Err(e) = stream.write_all(&packet).await {
-                        eprintln!("Failed to send video frame: {}", e);
-                        let _ = label_map.0.remove(label);
-                        break;
+                        if let Err(e) = stream.write_all(&packet).await {
+                            {
+                                // let mut label_map = label_map.write().await;
+                                // let _ = label_map.remove(label);
+
+                            }
+                            eprintln!("Failed to send video frame: {}", e);
+                            break;
+                        }
                     }
                 }
             }

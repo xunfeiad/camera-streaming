@@ -11,11 +11,11 @@ pub async fn start_video_task(addr: &str, label_map: Arc<RwLock<LabelMapQueue<Ve
     loop {
         let (mut socket, _) = listener.accept().await.unwrap();
         let label_map = label_map.clone();
-        let (mut s, mut r) = async_channel::unbounded::<Vec<u8>>();
+        let ( s, r) = async_channel::unbounded::<Vec<u8>>();
         let queue = crate::Queue::new(
-            AtomicBool::new(false),
-            &mut s as *mut Sender<Vec<u8>>,
-            &mut r as *mut Receiver<Vec<u8>>,
+            false,
+            s,
+            r,
         );
         tokio::spawn(async move {
             let video = VideoParse::new(None, None, None);

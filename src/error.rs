@@ -32,4 +32,6 @@ pub enum CaptureError {
     AsyncChannelError(#[from] async_channel::SendError<Vec<u8>>),
     #[error("Duplicated label")]
     DuplicatedLabelError,
+    #[error("Arc get mut map error")]
+    ArcGetMutMapError,
 }

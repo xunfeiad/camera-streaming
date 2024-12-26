@@ -7,6 +7,7 @@ use std::{
         Arc,
     },
 };
+use tokio::sync::RwLock;
 
 pub mod config;
 pub mod error;
@@ -17,21 +18,22 @@ pub mod task;
 pub type Auth = [u8; 100];
 
 pub struct Queue<T> {
-    pub flag: AtomicBool,
-    pub sender: AtomicPtr<Sender<T>>,
-    pub receiver: AtomicPtr<Receiver<T>>,
+    pub flag: bool,
+    pub sender: Sender<T>,
+    pub receiver: Receiver<T>,
 }
 
 impl<T> Queue<T> {
-    pub fn new(flag: AtomicBool, sender: *mut Sender<T>, receiver: *mut Receiver<T>) -> Self {
+    pub fn new(flag: bool, sender: Sender<T>, receiver: Receiver<T>) -> Self {
         Self {
             flag,
-            sender: AtomicPtr::new(sender),
-            receiver: AtomicPtr::new(receiver),
+            sender,
+            receiver,
         }
     }
 }
 
+#[derive(Debug)]
 pub struct LabelMapQueue<T>(HashMap<String, AtomicPtr<Queue<T>>>);
 
 impl<T> LabelMapQueue<T> {
@@ -51,18 +53,31 @@ impl<T> LabelMapQueue<T> {
             None => unsafe {
                 self.0
                     .entry(label)
-                    .and_modify(|queue| (**queue.get_mut()).flag = AtomicBool::new(true));
+                    .and_modify(|queue| (**queue.get_mut()).flag = true);
             },
         }
 
         Ok(())
     }
 
+    pub async fn set_flag_to_true(&mut self, label: &str) -> Result<()>{
+        let queue = self.0.get_mut(label).ok_or(CaptureError::EmptyLabelName)?;
+        unsafe {
+            (*queue.load(Ordering::Acquire)).flag = true;
+        }
+        Ok(())
+    }
+
+    pub async fn remove(&mut self, label: &str) -> Result<()>{
+        self.0.remove(label).ok_or(CaptureError::EmptyLabelName)?;
+        Ok(())
+    }
+
+    // todo!
     pub fn get_queue(&self, label: &str) -> Result<&Queue<T>> {
-        let queue = self
-            .0
+        let queue = self.0
             .get(label)
-            .ok_or(error::CaptureError::EmptyLabelName)?;
+            .ok_or(CaptureError::EmptyLabelName)?;
         unsafe {
             let a = queue
                 .as_ptr()
@@ -90,25 +105,15 @@ impl MiddleQueue for Queue<Vec<u8>> {
     type QueueMap = LabelMapQueue<Self::Item>;
 
     async fn send(&self, data: Self::Item) -> Result<()> {
-        let flag = self.flag.load(Ordering::Acquire);
-        println!("{:?}", flag);
-        if flag {
-            log::info!("Sending...");
-            unsafe {
-                (*self.sender.load(Ordering::Acquire)).send(data).await?;
-            }
-            log::info!("Sending successfully...");
+        if self.flag {
+            self.sender.send(data).await?;
         }
 
         Ok(())
     }
 
     async fn recv(&self) -> Result<Self::Item> {
-        log::info!("Recv...");
-        unsafe {
-            let item = (*self.receiver.load(Ordering::Acquire)).recv().await?;
-            log::info!("Recv successfully...");
-            Ok(item)
-        }
+        let item = self.receiver.recv().await?;
+        Ok(item)
     }
 }
