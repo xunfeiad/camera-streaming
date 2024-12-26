@@ -1,10 +1,9 @@
-use ::capture::{config::Configuration, error::Result};
-use capture::rabbitmq::RabbitmqConn;
+use ::camera_streaming::{config::Configuration, error::Result};
+use camera_streaming::rabbitmq::RabbitmqConn;
 use env_logger::Env;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
 #[tokio::main(worker_threads = 10)]
 async fn main() -> Result<()> {
     let env = Env::new()
@@ -25,14 +24,14 @@ async fn main() -> Result<()> {
     ));
 
     let conn = Arc::new(rabbitmq.open_connection().await?);
-    let task_video = capture::task::video_task::start_video_task(
+    let task_video = camera_streaming::task::video_task::start_video_task(
         &video_server_addr,
         label_map.clone(),
         rabbitmq.clone(),
         conn.clone(),
     );
 
-    let task_server = capture::task::web_server_task::start_web_server_task(
+    let task_server = camera_streaming::task::web_server_task::start_web_server_task(
         &web_server_addr,
         label_map.clone(),
         rabbitmq.clone(),
