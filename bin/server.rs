@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
     );
 
     let task_server = camera_streaming::task::web_server_task::start_web_server_task(
+    let task_server = camera_streaming::task::web_server_task::start_web_server_task(
         &web_server_addr,
         label_flag_map,
         label_receiver_map,
