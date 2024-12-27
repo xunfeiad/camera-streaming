@@ -1,6 +1,8 @@
-use crate::error::CaptureError;
-use crate::{config::Configuration, error::Result, Auth, LabelMapQueue};
-use crate::{MiddleQueue, Queue};
+use crate::{
+    config::Configuration, error::CaptureError, error::Result, Label, LabelFlagMap,
+    LabelReceiverMap,
+};
+use async_channel::{Receiver, Sender};
 use chrono::Local;
 use opencv::{
     core::{Mat, Size, Vector},
@@ -8,16 +10,17 @@ use opencv::{
     prelude::*,
     videoio::{VideoCapture, VideoWriter},
 };
-use std::sync::atomic::{AtomicBool, AtomicPtr};
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use std::{net::SocketAddr, sync::atomic::AtomicBool, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::RwLock,
 };
 
 const BASE_RESPONSE: &[u8] =
     b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
+
+const ERROR_RESPONSE: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n";
 
 pub struct VideoParse {
     pub protocol: Option<(char, char, char, char)>,
@@ -62,8 +65,10 @@ impl VideoParse {
     pub async fn decode(
         &self,
         stream: &mut TcpStream,
-        label_map: Arc<RwLock<LabelMapQueue<Vec<u8>>>>,
-        mut queue: Box<Queue<Vec<u8>>>,
+        sender: Sender<Vec<u8>>,
+        receiver: Receiver<Vec<u8>>,
+        label_flag_map: Arc<LabelFlagMap>,
+        label_receiver_map: Arc<RwLock<LabelReceiverMap<Vec<u8>>>>,
     ) -> Result<()> {
         let mut size_buffer = [0; 2];
         stream.read_exact(&mut size_buffer).await?;
@@ -72,16 +77,11 @@ impl VideoParse {
         buf.resize(data_size, 0);
         stream.read_exact(&mut buf).await?;
         let config: Configuration = serde_json::from_str(std::str::from_utf8(&buf)?)?;
-        if let Some(ref label) = config.label {
-            {
-                let mut label_map = label_map.write().await;
-                label_map
-                    .join_label_to_server(label.to_string(), Some(queue.as_mut()))
-                    .await?;
-                log::info!("Add label: {} to label_map successfully", label);
-            }
-        } else {
-            return Err(CaptureError::EmptyLabelName);
+        let label: Label = config.label.clone().into();
+        {
+            let mut label_receiver_map = label_receiver_map.write().await;
+            label_flag_map.insert(label, AtomicBool::new(false)).await;
+            label_receiver_map.0.insert(label, receiver);
         }
         let mut writer = self.set_video_writer(stream.peer_addr().unwrap(), &config);
 
@@ -105,8 +105,9 @@ impl VideoParse {
                 eprintln!("Error reading frame data: {}", e);
                 break;
             }
-
-            queue.as_ref().send(buf.clone()).await?;
+            if label_flag_map.get_flag(&label).await {
+                sender.send(buf.clone()).await?;
+            }
             if let Some(ref mut writer) = writer {
                 // Encode and write
                 let buf = Mat::from_slice(&buf)?;
@@ -192,23 +193,20 @@ impl VideoParse {
     pub async fn send_to_web(
         &self,
         mut stream: &mut TcpStream,
-        label_map: Arc<RwLock<LabelMapQueue<Vec<u8>>>>,
+        label_flag_map: Arc<LabelFlagMap>,
+        label_receiver_map: Arc<RwLock<LabelReceiverMap<Vec<u8>>>>,
     ) -> Result<()> {
         let mut peek_buf = [0u8; 1000];
         peek_stream_data(&mut stream, &mut peek_buf).await?;
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
-        if let Some(ref label) = parse_label_data(&s) {
-            {
-                {
-                    let mut label_map = label_map.write().await;
-                    label_map.set_flag_to_true(label).await?;
-                    println!("set falg to true successfully,{:?}, {:?}",label,label_map)
-                }
+        match parse_label_data(&s) {
+            Ok(ref label) => {
+                label_flag_map.set_flag_to_true(label).await?;
                 stream.write_all(BASE_RESPONSE).await?;
                 {
-                    let mut label_map = label_map.read().await;
-                    let queue = &(*label_map.get_queue(label)?);
-                    while let Ok(msg) = queue.recv().await {
+                    let label_receiver_map = label_receiver_map.read().await;
+                    let receiver = label_receiver_map.get_receiver(&label)?;
+                    while let Ok(msg) = receiver.recv().await {
                         let header = format!(
                             "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
                             msg.len()
@@ -216,16 +214,27 @@ impl VideoParse {
                         let packet = [header.as_bytes(), msg.as_slice()].concat();
 
                         if let Err(e) = stream.write_all(&packet).await {
-                            {
-                                // let mut label_map = label_map.write().await;
-                                // let _ = label_map.remove(label);
-
-                            }
                             eprintln!("Failed to send video frame: {}", e);
                             break;
                         }
                     }
                 }
+            }
+            Err(e) => {
+                let error_json_string = e.to_json_string(); // 保存临时值
+                let header = format!("Content-Length: {}\r\n\r\n", error_json_string.len());
+
+                stream
+                    .write_all(
+                        [
+                            ERROR_RESPONSE,
+                            header.as_bytes(),
+                            error_json_string.as_bytes(),
+                        ]
+                        .concat()
+                        .as_slice(),
+                    )
+                    .await?;
             }
         }
 
@@ -233,75 +242,46 @@ impl VideoParse {
     }
 }
 
-pub fn to_u8(auth: String) -> Auth {
-    let mut arr = [0u8; 100];
-    let bytes = auth.as_bytes();
-    arr[..bytes.len()].copy_from_slice(bytes);
-    arr
-}
-
 pub async fn peek_stream_data(stream: &mut TcpStream, buf: &mut [u8; 1000]) -> Result<()> {
     stream.peek(buf).await?;
     Ok(())
 }
 
-pub fn parse_label_data(s: &str) -> Option<String> {
+pub fn parse_label_data(s: &str) -> Result<Label> {
     let mut request = http_parse::Request::new();
     request.parse_from_str(s);
     let querys = request.query();
     let headers = request.headers();
-    let mut label: Option<String> = None;
+    let mut label: Option<Label> = None;
     querys.iter().for_each(|x| {
         if x.name() == "label" {
-            label = Some(x.value().to_string())
+            let lab: Label = x.value().as_bytes().into();
+            label = Some(lab)
         }
     });
     if label.is_none() {
         headers.iter().for_each(|x| {
             if x.name() == "label" {
-                label = Some(x.value().to_string())
+                let lab: Label = x.value().as_bytes().into();
+                label = Some(lab)
             }
         });
     }
 
-    label
+    label.ok_or(CaptureError::InvalidLabel("no label in request."))
 }
 
 #[test]
 pub fn test_parse_label_data() -> Result<()> {
     let s1 = "GET /?a=b&label=127.0.0.1 HTTP/1.1\r\nHost: localhost:54322\r\nConnection: keep-alive\r\nCache-Control: max-age=0\r\nsec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"\r\nsec-ch-ua-mobile: ?0\r\nsec-ch-ua-platform: \"macOS\"\r\nUpgrade-Insecure-Requests: 1\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\nSec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nAccept-Language: zh-CN,zh;q=0.9\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    let s2 = parse_label_data(s1);
-    assert_eq!(Some(String::from("127.0.0.1")), s2);
+    let s2 = parse_label_data(s1)?;
+    assert_eq!(<&[u8] as Into<Label>>::into("127.0.0.1".as_bytes()), s2);
     let s3 = "GET /?a=b HTTP/1.1\r\nHost: localhost:54322\r\nlabel: 127.0.0.1\r\nConnection: keep-alive\r\nCache-Control: max-age=0\r\nsec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"\r\nsec-ch-ua-mobile: ?0\r\nsec-ch-ua-platform: \"macOS\"\r\nUpgrade-Insecure-Requests: 1\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\nSec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nAccept-Language: zh-CN,zh;q=0.9\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    let s4 = parse_label_data(s3);
-    assert_eq!(Some(String::from("127.0.0.1")), s4);
+    let s4 = parse_label_data(s3)?;
+    assert_eq!(<&[u8] as Into<Label>>::into("127.0.0.1".as_bytes()), s4);
 
     let s5 = "GET /?a=b&label=127.0.0.2 HTTP/1.1\r\nHost: localhost:54322\r\nlabel: 127.0.0.1\r\nConnection: keep-alive\r\nCache-Control: max-age=0\r\nsec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"\r\nsec-ch-ua-mobile: ?0\r\nsec-ch-ua-platform: \"macOS\"\r\nUpgrade-Insecure-Requests: 1\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\nSec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nAccept-Language: zh-CN,zh;q=0.9\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    let s6 = parse_label_data(s5);
-    assert_eq!(Some(String::from("127.0.0.2")), s6);
-    let s7 = "GET /?a=b HTTP/1.1\r\nHost: localhost:54322\r\nConnection: keep-alive\r\nCache-Control: max-age=0\r\nsec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"\r\nsec-ch-ua-mobile: ?0\r\nsec-ch-ua-platform: \"macOS\"\r\nUpgrade-Insecure-Requests: 1\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\nSec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nAccept-Language: zh-CN,zh;q=0.9\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    let s8 = parse_label_data(s7);
-    assert_eq!(None, s8);
+    let s6 = parse_label_data(s5)?;
+    assert_eq!(<&[u8] as Into<Label>>::into("127.0.0.2".as_bytes()), s6);
     Ok(())
-}
-
-#[test]
-pub fn test_to_u8() {
-    let password = String::from("xunfei");
-    let arr = to_u8(password.clone());
-    let binding = String::from_utf8_lossy(&arr).to_string();
-    let password2 = binding.split_at(password.len()).0;
-    assert_eq!(password, password2);
-
-    let password = String::from("");
-    let arr = to_u8(password.clone());
-    let binding = String::from_utf8_lossy(&arr).to_string();
-    let password2 = binding.split_at(password.len()).0;
-    assert_eq!(password, password2);
-
-    let password = String::from("xunfei1");
-    let arr = to_u8(String::from("xunfei2"));
-    let binding = String::from_utf8_lossy(&arr).to_string();
-    let password2 = binding.split_at(password.len()).0;
-    assert_ne!(password, password2);
 }

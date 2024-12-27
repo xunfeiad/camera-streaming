@@ -1,8 +1,4 @@
-use crate::{
-    error::{CaptureError, Result},
-    parse::video_parse::to_u8,
-    Auth,
-};
+use crate::error::{CaptureError, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -50,7 +46,7 @@ pub struct Configuration {
     pub quality: i32,
 
     #[arg(short = 'l', long, help = "The identification of the camera")]
-    pub label: Option<String>,
+    pub label: String,
 }
 
 impl TryFrom<String> for Configuration {
@@ -69,13 +65,6 @@ impl Configuration {
         file.read_to_string(&mut buf)?;
         Configuration::try_from(buf)
     }
-    pub fn auth(&self) -> Auth {
-        let mut username = self.username.clone().map_or(String::new(), |x| x);
-        let password = self.password.clone().map_or(String::new(), |x| x);
-        username.push_str(&password);
-        to_u8(username)
-    }
-
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let binding = serde_json::to_string(self)?;
         let b = binding.as_bytes();

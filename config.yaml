@@ -6,3 +6,4 @@ report_port: 54322
 is_transcribe: false
 fps: 10
 quality: 10
+label: 1

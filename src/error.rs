@@ -32,6 +32,12 @@ pub enum CaptureError {
     AsyncChannelError(#[from] async_channel::SendError<Vec<u8>>),
     #[error("Duplicated label")]
     DuplicatedLabelError,
-    #[error("Arc get mut map error")]
-    ArcGetMutMapError,
+    #[error("Invalid label:{0}")]
+    InvalidLabel(&'static str),
+}
+
+impl CaptureError {
+    pub fn to_json_string(&self) -> String {
+        format!("{{\"error\": {:?}}}", self)
+    }
 }

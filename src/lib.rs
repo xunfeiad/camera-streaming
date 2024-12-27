@@ -1,119 +1,94 @@
-use async_channel::{Receiver, Sender};
-use error::{CaptureError, Result};
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, AtomicPtr, Ordering},
-        Arc,
-    },
-};
+use crate::error::{CaptureError, Result};
+use async_channel::Receiver;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
-
 pub mod config;
 pub mod error;
 pub mod parse;
 
 pub mod task;
 
-pub type Auth = [u8; 100];
-
-pub struct Queue<T> {
-    pub flag: bool,
-    pub sender: Sender<T>,
-    pub receiver: Receiver<T>,
-}
-
-impl<T> Queue<T> {
-    pub fn new(flag: bool, sender: Sender<T>, receiver: Receiver<T>) -> Self {
-        Self {
-            flag,
-            sender,
-            receiver,
-        }
+fn copy(arr: &mut [u8; 100], bytes: &[u8]) {
+    if bytes.len() > 100 {
+        arr.copy_from_slice(&[1u8; 100]);
+    } else {
+        arr[..bytes.len()].copy_from_slice(bytes);
     }
 }
 
-#[derive(Debug)]
-pub struct LabelMapQueue<T>(HashMap<String, AtomicPtr<Queue<T>>>);
+#[derive(Clone, Eq, Hash, PartialEq, Debug, Copy)]
+pub struct Label([u8; 100]);
 
-impl<T> LabelMapQueue<T> {
-    pub fn new() -> Self {
-        Self(HashMap::new())
+impl<'a> From<&'a str> for Label {
+    fn from(value: &'a str) -> Self {
+        let mut arr = [0u8; 100];
+        let bytes = value.as_bytes();
+        copy(&mut arr, bytes);
+        Label(arr)
     }
+}
 
-    pub async fn join_label_to_server(
-        &mut self,
-        label: String,
-        queue: Option<&mut Queue<T>>,
-    ) -> Result<()> {
-        match queue {
-            Some(queue) => {
-                self.0.insert(label, AtomicPtr::new(queue));
-            }
-            None => unsafe {
-                self.0
-                    .entry(label)
-                    .and_modify(|queue| (**queue.get_mut()).flag = true);
-            },
+impl From<String> for Label {
+    fn from(value: String) -> Self {
+        let mut arr = [0u8; 100];
+        let bytes = value.as_bytes();
+        copy(&mut arr, bytes);
+        Label(arr)
+    }
+}
+impl<'a> From<&'a [u8]> for Label {
+    fn from(value: &[u8]) -> Label {
+        let mut arr = [0u8; 100];
+        if value.len() > 100 {
+            arr.copy_from_slice(&[2u8; 100]);
+        } else {
+            arr[..value.len()].copy_from_slice(value);
         }
-
-        Ok(())
+        Label(arr)
     }
+}
 
-    pub async fn set_flag_to_true(&mut self, label: &str) -> Result<()>{
-        let queue = self.0.get_mut(label).ok_or(CaptureError::EmptyLabelName)?;
-        unsafe {
-            (*queue.load(Ordering::Acquire)).flag = true;
+#[derive(Default)]
+pub struct LabelFlagMap(RwLock<HashMap<Label, AtomicBool>>);
+
+impl LabelFlagMap {
+    pub async fn insert(&self, k: Label, v: AtomicBool) {
+        let mut label_flag_map = self.0.write().await;
+        log::info!("add label:{:?} to server successfully.", k);
+        label_flag_map.insert(k, v);
+    }
+    pub async fn get_flag(&self, label: &Label) -> bool {
+        let label_flag_map = self.0.write().await;
+        let flag = label_flag_map.get(label);
+        if flag.is_some() && flag.unwrap().load(Ordering::Acquire) {
+            return true;
         }
-        Ok(())
+        false
     }
 
-    pub async fn remove(&mut self, label: &str) -> Result<()>{
-        self.0.remove(label).ok_or(CaptureError::EmptyLabelName)?;
-        Ok(())
-    }
+    pub async fn set_flag_to_true(&self, label: &Label) -> Result<()> {
+        let label_flag_map = self.0.write().await;
 
-    // todo!
-    pub fn get_queue(&self, label: &str) -> Result<&Queue<T>> {
-        let queue = self.0
-            .get(label)
-            .ok_or(CaptureError::EmptyLabelName)?;
-        unsafe {
-            let a = queue
-                .as_ptr()
-                .as_ref()
-                .ok_or(CaptureError::EmptyLabelName)?
-                .as_ref()
-                .ok_or(CaptureError::EmptyLabelName)?;
-            Ok(a)
+        let flag = label_flag_map.get(label);
+        if let Some(flag) = flag {
+            flag.store(true, Ordering::Release);
+            Ok(())
+        } else {
+            Err(CaptureError::EmptyLabelName)
         }
     }
 }
 
-#[async_trait::async_trait]
-pub trait MiddleQueue {
-    type Item;
-    type QueueMap;
+#[derive(Default)]
+pub struct LabelReceiverMap<T>(HashMap<Label, Receiver<T>>);
 
-    async fn send(&self, data: Self::Item) -> Result<()>;
-    async fn recv(&self) -> Result<Self::Item>;
-}
-
-#[async_trait::async_trait]
-impl MiddleQueue for Queue<Vec<u8>> {
-    type Item = Vec<u8>;
-    type QueueMap = LabelMapQueue<Self::Item>;
-
-    async fn send(&self, data: Self::Item) -> Result<()> {
-        if self.flag {
-            self.sender.send(data).await?;
+impl<T> LabelReceiverMap<T> {
+    pub fn get_receiver(&self, label: &Label) -> Result<&Receiver<T>> {
+        let receiver = self.0.get(&label);
+        match receiver {
+            Some(receiver) => Ok(receiver),
+            None => Err(CaptureError::EmptyLabelName),
         }
-
-        Ok(())
-    }
-
-    async fn recv(&self) -> Result<Self::Item> {
-        let item = self.receiver.recv().await?;
-        Ok(item)
     }
 }
