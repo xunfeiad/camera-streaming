@@ -1,14 +1,16 @@
 use ::camera_streaming::{config::Configuration, error::Result, LabelFlagMap, LabelReceiverMap};
-use env_logger::Env;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
 
 #[tokio::main(worker_threads = 10)]
 async fn main() -> Result<()> {
-    let env = Env::new()
-        .filter_or("Capture", "info")
-        .write_style_or("MY_LOG_STYLE", "always");
-    env_logger::init_from_env(env);
+    tracing_subscriber::fmt().with_line_number(true).init();
+    info!(
+        server = "Camera-Stream-Server",
+        "Preparing to start server."
+    );
+
     let configuration = Arc::new(Configuration::parse_yaml("config.yaml")?);
 
     let video_server_addr = format!("0.0.0.0:{}", &configuration.send_port);

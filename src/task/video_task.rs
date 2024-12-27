@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::{net::TcpListener, sync::RwLock};
+use tracing::{error, info};
 
 use crate::{parse::video_parse::VideoParse, LabelFlagMap, LabelReceiverMap};
 
@@ -10,7 +11,7 @@ pub async fn start_video_task(
     label_receiver_map: Arc<RwLock<LabelReceiverMap<Vec<u8>>>>,
 ) {
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("Listening on {}", addr);
+    info!("Listening on {}", addr);
     loop {
         let (mut socket, _) = listener.accept().await.unwrap();
         let label_flag_map = label_flag_map.clone();
@@ -29,7 +30,7 @@ pub async fn start_video_task(
                 )
                 .await
             {
-                log::error!("{:?}", e);
+                error!("{:?}", e);
             }
         });
     }

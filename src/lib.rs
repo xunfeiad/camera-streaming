@@ -3,6 +3,7 @@ use async_channel::Receiver;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
+use tracing::info;
 pub mod config;
 pub mod error;
 pub mod parse;
@@ -55,7 +56,7 @@ pub struct LabelFlagMap(RwLock<HashMap<Label, AtomicBool>>);
 impl LabelFlagMap {
     pub async fn insert(&self, k: Label, v: AtomicBool) {
         let mut label_flag_map = self.0.write().await;
-        log::info!("add label:{:?} to server successfully.", k);
+        info!("add label:{:?} to server successfully.", k);
         label_flag_map.insert(k, v);
     }
     pub async fn get_flag(&self, label: &Label) -> bool {
@@ -77,6 +78,11 @@ impl LabelFlagMap {
         } else {
             Err(CaptureError::EmptyLabelName)
         }
+    }
+
+    pub async fn is_label(&self, lab: &Label) -> bool {
+        let label_flag_map = self.0.write().await;
+        label_flag_map.keys().any(|label| label == lab)
     }
 }
 

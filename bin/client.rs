@@ -4,9 +4,15 @@ use camera_streaming::config::Configuration;
 use clap::Parser;
 use opencv::{prelude::*, videoio};
 use tokio::net::TcpStream;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt().with_line_number(true).init();
+    info!(
+        server = "Camera-Stream-Client",
+        "Preparing to start server."
+    );
     let cli: Configuration = Configuration::parse();
     let cap = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
     let opened = videoio::VideoCapture::is_opened(&cap)?;

@@ -16,6 +16,7 @@ use tokio::{
     net::TcpStream,
     sync::RwLock,
 };
+use tracing::{error, info};
 
 const BASE_RESPONSE: &[u8] =
     b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
@@ -85,7 +86,7 @@ impl VideoParse {
         }
         let mut writer = self.set_video_writer(stream.peer_addr().unwrap(), &config);
 
-        log::info!("New connection from {}", stream.peer_addr().unwrap());
+        info!("New connection from {}", stream.peer_addr().unwrap());
 
         loop {
             let mut buf = vec![];
@@ -93,7 +94,7 @@ impl VideoParse {
             // Read the exact image size
             let mut size_buffer = [0; 4];
             if let Err(e) = stream.read_exact(&mut size_buffer).await {
-                log::error!("{:?}", e);
+                error!("{:?}", e);
                 break;
             }
             let frame_size = u32::from_be_bytes(size_buffer) as usize;
@@ -102,7 +103,7 @@ impl VideoParse {
             buf.resize(frame_size, 0); // Adjust the buffer size
 
             if let Err(e) = stream.read_exact(&mut buf).await {
-                eprintln!("Error reading frame data: {}", e);
+                error!("Error reading frame data: {}", e);
                 break;
             }
             if label_flag_map.get_flag(&label).await {
@@ -177,13 +178,13 @@ impl VideoParse {
             let size_bytes = buffer_size.to_be_bytes(); // 转换为大端字节序
 
             if let Err(e) = stream.write_all(&size_bytes).await {
-                log::error!("Error occured: {}", e);
+                error!("Error occured: {}", e);
                 break;
             }
 
             // Second, send real image data.
             if let Err(e) = stream.write_all(buffer.as_slice()).await {
-                log::error!("Error occured: {}", e);
+                error!("Error occured: {}", e);
                 break;
             }
         }
@@ -199,45 +200,46 @@ impl VideoParse {
         let mut peek_buf = [0u8; 1000];
         peek_stream_data(&mut stream, &mut peek_buf).await?;
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
-        match parse_label_data(&s) {
-            Ok(ref label) => {
-                label_flag_map.set_flag_to_true(label).await?;
-                stream.write_all(BASE_RESPONSE).await?;
-                {
-                    let label_receiver_map = label_receiver_map.read().await;
-                    let receiver = label_receiver_map.get_receiver(&label)?;
-                    while let Ok(msg) = receiver.recv().await {
-                        let header = format!(
-                            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                            msg.len()
-                        );
-                        let packet = [header.as_bytes(), msg.as_slice()].concat();
+        let label = parse_label_data(&s)?;
+        if !label_flag_map.is_label(&label).await {
+            return Err(CaptureError::InvalidLabel("the label is not registered."));
+        }
+        label_flag_map.set_flag_to_true(&label).await?;
+        stream.write_all(BASE_RESPONSE).await?;
+        {
+            let label_receiver_map = label_receiver_map.read().await;
+            let receiver = label_receiver_map.get_receiver(&label)?;
+            while let Ok(msg) = receiver.recv().await {
+                let header = format!(
+                    "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                    msg.len()
+                );
+                let packet = [header.as_bytes(), msg.as_slice()].concat();
 
-                        if let Err(e) = stream.write_all(&packet).await {
-                            eprintln!("Failed to send video frame: {}", e);
-                            break;
-                        }
-                    }
+                if let Err(_e) = stream.write_all(&packet).await {
+                    break;
                 }
-            }
-            Err(e) => {
-                let error_json_string = e.to_json_string(); // 保存临时值
-                let header = format!("Content-Length: {}\r\n\r\n", error_json_string.len());
-
-                stream
-                    .write_all(
-                        [
-                            ERROR_RESPONSE,
-                            header.as_bytes(),
-                            error_json_string.as_bytes(),
-                        ]
-                        .concat()
-                        .as_slice(),
-                    )
-                    .await?;
             }
         }
 
+        Ok(())
+    }
+
+    pub async fn response_error(&self, stream: &mut TcpStream, err: &CaptureError) -> Result<()> {
+        error!("【Response Error】{:?}", err);
+        let error_json_string = err.to_json_string();
+        let header = format!("Content-Length: {}\r\n\r\n", error_json_string.len());
+        stream
+            .write_all(
+                [
+                    ERROR_RESPONSE,
+                    header.as_bytes(),
+                    error_json_string.as_bytes(),
+                ]
+                .concat()
+                .as_slice(),
+            )
+            .await?;
         Ok(())
     }
 }
@@ -252,6 +254,9 @@ pub fn parse_label_data(s: &str) -> Result<Label> {
     request.parse_from_str(s);
     let querys = request.query();
     let headers = request.headers();
+    if request.path() == "/favicon.ico" {
+        return Err(CaptureError::InvalidLabel("favicon.ico request."));
+    }
     let mut label: Option<Label> = None;
     querys.iter().for_each(|x| {
         if x.name() == "label" {
