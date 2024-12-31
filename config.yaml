@@ -1,8 +1,10 @@
 username: xunfei
 password: xunfei
-host: 127.0.0.1
-send_port: 54321
-report_port: 54322
+host: localhost
+video_receiver_port: 54321
+video_server_port: 54322
+audio_receiver_port: 54323
+audio_server_port: 54324
 is_transcribe: false
 fps: 10
 quality: 10
