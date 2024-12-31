@@ -82,6 +82,6 @@ pub fn test_parse_yaml_file() {
     println!("{:?}", configuration);
     assert_eq!(configuration.username.unwrap(), String::from("xunfei"));
     assert_eq!(configuration.password.unwrap(), String::from("xunfei"));
-    assert_eq!(configuration.host, String::from("127.0.0.1"));
-    assert_eq!(configuration.send_port, 54321);
+    assert_eq!(configuration.host, String::from("localhost"));
+    assert_eq!(configuration.video_receiver_port, 54321);
 }

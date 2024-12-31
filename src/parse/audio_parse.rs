@@ -1,17 +1,17 @@
+use crate::config::Configuration;
 use crate::error::{CaptureError, Result};
 use crate::parse::video_parse::{parse_label_data, peek_stream_data};
+use crate::parse::ResponseError;
 use crate::{DeviceEnum, DeviceFlag, IsEnd, Label, LabelFlagMap, LabelReceiverMap};
+use async_channel::{Receiver, Sender};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use async_channel::{Receiver, Sender};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tracing::{error, info};
-use crate::config::Configuration;
-use crate::parse::ResponseError;
 
 pub struct Audio;
 
@@ -19,15 +19,19 @@ impl Audio {
     pub fn new() -> Self {
         Self
     }
-    pub async fn encode(&self, mut socket: TcpStream, configuration: &Configuration, handle: Handle, is_end: Arc<IsEnd>) -> Result<()> {
-
+    pub async fn encode(
+        &self,
+        mut socket: TcpStream,
+        configuration: &Configuration,
+        handle: Handle,
+        is_end: Arc<IsEnd>,
+    ) -> Result<()> {
         // // Send ConfigData
         let configuration = configuration.to_bytes()?;
         let data = configuration.len() as u16;
         let size = data.to_be_bytes();
         socket.write_all(&size).await.unwrap();
         socket.write_all(&configuration.as_slice()).await?;
-
 
         let host = cpal::default_host();
         let device = host
@@ -42,9 +46,13 @@ impl Audio {
             &config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 handle.block_on(async {
-                    let data: Vec<u8> = data.to_vec().into_iter().flat_map(|x| x.to_be_bytes()).collect();
-                    if let Err(e) = socket.write_all(data.as_slice()).await{
-                        error!(Error="Audio::encode::build_input_stream", "{}", e);
+                    let data: Vec<u8> = data
+                        .to_vec()
+                        .into_iter()
+                        .flat_map(|x| x.to_be_bytes())
+                        .collect();
+                    if let Err(e) = socket.write_all(data.as_slice()).await {
+                        error!(Error = "Audio::encode::build_input_stream", "{}", e);
                         is_end_clone.store(true, Ordering::Release);
                     }
                 })
@@ -58,8 +66,8 @@ impl Audio {
         stream.play()?;
 
         loop {
-            if is_end.load(Ordering::Acquire){
-                break
+            if is_end.load(Ordering::Acquire) {
+                break;
             }
         }
         Ok(())
@@ -136,7 +144,6 @@ impl Audio {
             .insert(label, receiver, DeviceEnum::Audio)
             .await?;
         info!("New connection from {}", stream.peer_addr().unwrap());
-        println!("{:?}", label_receiver_map.0.read().await);
         loop {
             let mut buf = vec![];
 

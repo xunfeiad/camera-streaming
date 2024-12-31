@@ -1,11 +1,13 @@
 use ::camera_streaming::error::Result;
 use camera_streaming::config::Configuration;
-use camera_streaming::{IsEnd, task::{encode_audio_task, encode_video_task}};
+use camera_streaming::{
+    task::{encode_audio_task, encode_video_task},
+    IsEnd,
+};
 use clap::Parser;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tracing::{error, info};
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,12 +38,16 @@ async fn main() -> Result<()> {
 
     let (video_res, audio_res) = tokio::join!(video_task, audio_task);
     match video_res {
-        Ok(_) => {},
-        Err(e) =>{error!(Error="Video Encode", "{}" ,e.to_string())}
+        Ok(_) => {}
+        Err(e) => {
+            error!(Error = "Video Encode", "{}", e.to_string())
+        }
     }
     match audio_res {
-        Ok(_) => {},
-        Err(e) =>{error!(Error="Audio Encode", "{}" ,e.to_string())}
+        Ok(_) => {}
+        Err(e) => {
+            error!(Error = "Audio Encode", "{}", e.to_string())
+        }
     }
     Ok(())
 }

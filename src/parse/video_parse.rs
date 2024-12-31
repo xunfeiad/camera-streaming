@@ -1,4 +1,11 @@
-use crate::{config::Configuration, constant::{BASE_RESPONSE, ERROR_RESPONSE}, error::CaptureError, error::Result, DeviceEnum, DeviceFlag, Label, LabelFlagMap, LabelReceiverMap, IsEnd};
+use crate::parse::ResponseError;
+use crate::{
+    config::Configuration,
+    constant::{BASE_RESPONSE, ERROR_RESPONSE},
+    error::CaptureError,
+    error::Result,
+    DeviceEnum, DeviceFlag, IsEnd, Label, LabelFlagMap, LabelReceiverMap,
+};
 use async_channel::{Receiver, Sender};
 use chrono::Local;
 use opencv::{
@@ -8,14 +15,13 @@ use opencv::{
     videoio,
     videoio::{VideoCapture, VideoWriter},
 };
-use std::{net::SocketAddr, sync::Arc};
 use std::sync::atomic::Ordering;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 use tracing::{error, info};
-use crate::parse::ResponseError;
 
 pub struct VideoParse {
     pub protocol: Option<(char, char, char, char)>,
@@ -147,7 +153,12 @@ impl VideoParse {
         }
     }
 
-    pub async fn encode(&self, mut stream: TcpStream, config: &Configuration, is_end: Arc<IsEnd>) -> Result<()> {
+    pub async fn encode(
+        &self,
+        mut stream: TcpStream,
+        config: &Configuration,
+        is_end: Arc<IsEnd>,
+    ) -> Result<()> {
         let mut frame = Mat::default();
         let params = vec![IMWRITE_JPEG_QUALITY, config.quality.into()];
         let config = config.to_bytes()?;
@@ -165,7 +176,7 @@ impl VideoParse {
         stream.write_all(&config.as_slice()).await?;
 
         loop {
-            if !is_end.load(Ordering::Acquire){
+            if !is_end.load(Ordering::Acquire) {
                 cap.read(&mut frame)?;
 
                 // Encode the `JPEG` image format.
@@ -272,14 +283,14 @@ pub fn parse_label_data(s: &str) -> Result<Label> {
         return Err(CaptureError::InvalidLabel("favicon.ico request."));
     }
     let mut label: Option<Label> = None;
-    querys.iter().for_each( |el|{
+    querys.iter().for_each(|el| {
         if el.name() == "label" {
             let lab: Label = el.value().as_bytes().into();
             label = Some(lab)
         }
     });
     if label.is_none() {
-        headers.iter().for_each( |el|{
+        headers.iter().for_each(|el| {
             if el.name() == "label" {
                 let lab: Label = el.value().as_bytes().into();
                 label = Some(lab)

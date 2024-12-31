@@ -71,7 +71,6 @@ impl LabelFlagMap {
     pub async fn insert(&self, k: Label, v: DeviceFlag) -> Result<()> {
         if !self.is_labeled(&k).await {
             self.0.write().await.insert(k, v);
-            println!("{:?}", k)
         } else {
             if v.video_flag.load(Ordering::Acquire).eq(&true) {
                 self.set_flag(&k, true, DeviceEnum::Video).await?;
@@ -136,15 +135,26 @@ impl DeviceReceiver {
 pub struct LabelReceiverMap(RwLock<HashMap<Label, DeviceReceiver>>);
 
 impl LabelReceiverMap {
-    pub async fn insert(&self, k: Label, v: Receiver<Vec<u8>>, device_enum: DeviceEnum) -> Result<()>{
+    pub async fn insert(
+        &self,
+        k: Label,
+        v: Receiver<Vec<u8>>,
+        device_enum: DeviceEnum,
+    ) -> Result<()> {
         let mut label_receiver_map = self.0.write().await;
 
         match device_enum {
-            DeviceEnum::Video =>{
-                label_receiver_map.entry(k).and_modify(|receiver| receiver.video_receiver = Some(v.clone())).or_insert(DeviceReceiver::new(Some(v), None));
+            DeviceEnum::Video => {
+                label_receiver_map
+                    .entry(k)
+                    .and_modify(|receiver| receiver.video_receiver = Some(v.clone()))
+                    .or_insert(DeviceReceiver::new(Some(v), None));
             }
-            DeviceEnum::Audio =>{
-                label_receiver_map.entry(k).and_modify(|receiver| receiver.audio_receiver = Some(v.clone())).or_insert(DeviceReceiver::new(None, Some(v)));
+            DeviceEnum::Audio => {
+                label_receiver_map
+                    .entry(k)
+                    .and_modify(|receiver| receiver.audio_receiver = Some(v.clone()))
+                    .or_insert(DeviceReceiver::new(None, Some(v)));
             }
         }
         info!("{:?}", label_receiver_map);
