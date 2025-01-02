@@ -109,7 +109,7 @@ impl LabelFlagMap {
 
     pub async fn is_labeled(&self, lab: &Label) -> bool {
         let label_flag_map = self.0.write().await;
-        label_flag_map.keys().any(|label| label == lab)
+        label_flag_map.contains_key(lab)
     }
 }
 
@@ -158,6 +158,14 @@ impl LabelReceiverMap {
             }
         }
         info!("{:?}", label_receiver_map);
+        Ok(())
+    }
+
+    pub async fn remove(&self, k: Label) -> Result<()> {
+        let mut label_receiver_map = self.0.write().await;
+        label_receiver_map
+            .remove(&k)
+            .ok_or(CaptureError::EmptyLabelName)?;
         Ok(())
     }
 }

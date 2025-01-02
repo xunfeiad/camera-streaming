@@ -13,12 +13,10 @@ use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tracing::{error, info};
 
+#[derive(Default)]
 pub struct Audio;
 
 impl Audio {
-    pub fn new() -> Self {
-        Self
-    }
     pub async fn encode(
         &self,
         mut socket: TcpStream,
@@ -26,12 +24,12 @@ impl Audio {
         handle: Handle,
         is_end: Arc<IsEnd>,
     ) -> Result<()> {
-        // // Send ConfigData
+        // Send ConfigData
         let configuration = configuration.to_bytes()?;
         let data = configuration.len() as u16;
         let size = data.to_be_bytes();
         socket.write_all(&size).await.unwrap();
-        socket.write_all(&configuration.as_slice()).await?;
+        socket.write_all(configuration.as_slice()).await?;
 
         let host = cpal::default_host();
         let device = host
@@ -46,11 +44,8 @@ impl Audio {
             &config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 handle.block_on(async {
-                    let data: Vec<u8> = data
-                        .to_vec()
-                        .into_iter()
-                        .flat_map(|x| x.to_be_bytes())
-                        .collect();
+                    let data: Vec<u8> =
+                        data.iter().copied().flat_map(|x| x.to_be_bytes()).collect();
                     if let Err(e) = socket.write_all(data.as_slice()).await {
                         error!(Error = "Audio::encode::build_input_stream", "{}", e);
                         is_end_clone.store(true, Ordering::Release);
@@ -75,12 +70,12 @@ impl Audio {
 
     pub async fn send_to_web(
         &self,
-        mut stream: &mut TcpStream,
+        stream: &mut TcpStream,
         label_flag_map: Arc<LabelFlagMap>,
         label_receiver_map: Arc<LabelReceiverMap>,
     ) -> Result<()> {
         let mut peek_buf = [0u8; 1000];
-        peek_stream_data(&mut stream, &mut peek_buf).await?;
+        peek_stream_data(stream, &mut peek_buf).await?;
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
         let label = parse_label_data(&s)?;
         if !label_flag_map.is_labeled(&label).await {
@@ -90,31 +85,30 @@ impl Audio {
             .set_flag(&label, true, DeviceEnum::Audio)
             .await?;
         stream.write_all(crate::constant::BASE_RESPONSE).await?;
-        {
-            let label_receiver_map = label_receiver_map.0.read().await;
-            let receiver = label_receiver_map
-                .get(&label)
-                .ok_or(CaptureError::EmptyLabelName)?;
 
-            match &receiver.audio_receiver {
-                Some(receiver) => {
-                    while let Ok(msg) = receiver.recv().await {
-                        let msg: Vec<u8> = msg.into_iter().flat_map(|x| x.to_be_bytes()).collect();
-                        let header = format!(
-                            "--frame\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\n\r\n",
-                            msg.len()
-                        );
-                        let packet = [header.as_bytes(), msg.as_slice()].concat();
+        let label_receiver_map = label_receiver_map.0.read().await;
+        let receiver = label_receiver_map
+            .get(&label)
+            .ok_or(CaptureError::EmptyLabelName)?;
 
-                        if let Err(_e) = stream.write_all(&packet).await {
-                            receiver.close();
-                            break;
-                        }
+        match &receiver.audio_receiver {
+            Some(receiver) => {
+                while let Ok(msg) = receiver.recv().await {
+                    let msg: Vec<u8> = msg.into_iter().flat_map(|x| x.to_be_bytes()).collect();
+                    let header = format!(
+                        "--frame\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\n\r\n",
+                        msg.len()
+                    );
+                    let packet = [header.as_bytes(), msg.as_slice()].concat();
+
+                    if let Err(_e) = stream.write_all(&packet).await {
+                        receiver.close();
+                        break;
                     }
                 }
-                None => {
-                    error!("Audio identifier is closed.")
-                }
+            }
+            None => {
+                error!("Audio identifier is closed.")
             }
         }
 
@@ -132,8 +126,7 @@ impl Audio {
         let mut size_buffer = [0; 2];
         stream.read_exact(&mut size_buffer).await?;
         let data_size = u16::from_be_bytes(size_buffer) as usize;
-        let mut buf = vec![];
-        buf.resize(data_size, 0);
+        let mut buf = vec![0; data_size];
         stream.read_exact(&mut buf).await?;
         let config: Configuration = serde_json::from_str(std::str::from_utf8(&buf)?)?;
         let label: Label = config.label.clone().into();
@@ -145,13 +138,11 @@ impl Audio {
             .await?;
         info!("New connection from {}", stream.peer_addr().unwrap());
         loop {
-            let mut buf = vec![];
-
-            // Confirm to receive the whole data
-            buf.resize(4, 0); // Adjust the buffer size
+            let mut buf = vec![0; 4];
 
             if let Err(e) = stream.read_exact(&mut buf).await {
                 error!("Error reading frame data: {}", e);
+                label_receiver_map.remove(label).await?;
                 break;
             }
 

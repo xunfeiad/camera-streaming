@@ -57,9 +57,9 @@ impl VideoParse {
         fps: Option<f64>,
     ) -> VideoParse {
         Self {
-            protocol: protocol.or_else(|| Some(('m', 'p', '4', 'v'))),
-            frame_size: frame_size.or_else(|| Some((1920, 1080))),
-            fps: fps.or_else(|| Some(60.0)),
+            protocol: protocol.or(Some(('m', 'p', '4', 'v'))),
+            frame_size: frame_size.or(Some((1920, 1080))),
+            fps: fps.or(Some(60.0)),
         }
     }
 
@@ -74,8 +74,8 @@ impl VideoParse {
         let mut size_buffer = [0; 2];
         stream.read_exact(&mut size_buffer).await?;
         let data_size = u16::from_be_bytes(size_buffer) as usize;
-        let mut buf = vec![];
-        buf.resize(data_size, 0);
+        let mut buf = vec![0; data_size];
+
         stream.read_exact(&mut buf).await?;
         let config: Configuration = serde_json::from_str(std::str::from_utf8(&buf)?)?;
         let label: Label = config.label.clone().into();
@@ -145,7 +145,7 @@ impl VideoParse {
             _ => false,
         };
         if is_transcribe {
-            let filename = format!("{}_{}.mp4", remote, Local::now().timestamp().to_string());
+            let filename = format!("{}_{}.mp4", remote, Local::now().timestamp());
             let writer = VideoWriter::new(&filename, fourcc, config.fps, frame_size, true).ok()?;
             Some(writer)
         } else {
@@ -160,7 +160,7 @@ impl VideoParse {
         is_end: Arc<IsEnd>,
     ) -> Result<()> {
         let mut frame = Mat::default();
-        let params = vec![IMWRITE_JPEG_QUALITY, config.quality.into()];
+        let params = vec![IMWRITE_JPEG_QUALITY, config.quality];
         let config = config.to_bytes()?;
         let mut cap = VideoCapture::new(0, videoio::CAP_ANY)?;
         let opened = VideoCapture::is_opened(&cap)?;
@@ -173,7 +173,7 @@ impl VideoParse {
         let data = config.len() as u16;
         let size = data.to_be_bytes();
         stream.write_all(&size).await?;
-        stream.write_all(&config.as_slice()).await?;
+        stream.write_all(config.as_slice()).await?;
 
         loop {
             if !is_end.load(Ordering::Acquire) {
@@ -206,12 +206,12 @@ impl VideoParse {
 
     pub async fn send_to_web(
         &self,
-        mut stream: &mut TcpStream,
+        stream: &mut TcpStream,
         label_flag_map: Arc<LabelFlagMap>,
         label_receiver_map: Arc<LabelReceiverMap>,
     ) -> Result<()> {
         let mut peek_buf = [0u8; 1000];
-        peek_stream_data(&mut stream, &mut peek_buf).await?;
+        peek_stream_data(stream, &mut peek_buf).await?;
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
         let label = parse_label_data(&s)?;
         if !label_flag_map.is_labeled(&label).await {
@@ -269,7 +269,7 @@ impl VideoParse {
     }
 }
 
-pub async fn peek_stream_data(stream: &mut TcpStream, buf: &mut [u8; 1000]) -> Result<()> {
+pub async fn peek_stream_data(stream: &TcpStream, buf: &mut [u8; 1000]) -> Result<()> {
     stream.peek(buf).await?;
     Ok(())
 }

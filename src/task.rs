@@ -8,7 +8,7 @@ pub async fn encode_video_task(
     cli: Arc<Configuration>,
     is_end: Arc<IsEnd>,
 ) -> crate::error::Result<()> {
-    let stream = TcpStream::connect((cli.host.clone(), cli.video_receiver_port.clone())).await?;
+    let stream = TcpStream::connect((cli.host.clone(), cli.video_receiver_port)).await?;
     let video = VideoParse::new(None, None, None);
     video.encode(stream, &cli, is_end).await?;
     Ok(())
@@ -19,8 +19,8 @@ pub async fn encode_audio_task(
     handle: Handle,
     is_end: Arc<IsEnd>,
 ) -> crate::error::Result<()> {
-    let stream = TcpStream::connect((cli.host.clone(), cli.audio_receiver_port.clone())).await?;
-    let audio = Audio::new();
+    let stream = TcpStream::connect((cli.host.clone(), cli.audio_receiver_port)).await?;
+    let audio = Audio;
     audio.encode(stream, &cli, handle, is_end).await?;
     Ok(())
 }
@@ -98,7 +98,7 @@ pub async fn decode_audio_task(
         let label_receiver_map = label_receiver_map.clone();
 
         tokio::spawn(async move {
-            let audio = Audio::new();
+            let audio = Audio;
             let (sender, receiver) = async_channel::unbounded::<Vec<u8>>();
             if let Err(e) = audio
                 .decode(
@@ -129,7 +129,7 @@ pub async fn start_audio_web_server_task(
         let label_receiver_map = label_receiver_map.clone();
 
         tokio::spawn(async move {
-            let audio = Audio::new();
+            let audio = Audio;
             if let Err(e) = audio
                 .send_to_web(&mut socket, label_flag_map, label_receiver_map)
                 .await
