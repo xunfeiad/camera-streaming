@@ -15,8 +15,10 @@ use opencv::{
     videoio,
     videoio::{VideoCapture, VideoWriter},
 };
-use std::sync::atomic::Ordering;
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    sync::atomic::Ordering,
+    {net::SocketAddr, sync::Arc},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,

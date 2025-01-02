@@ -1,4 +1,4 @@
-use ::camera_streaming::{config::Configuration, error::Result, LabelFlagMap, LabelReceiverMap};
+use camera_streaming::{config::Configuration, error::Result, LabelFlagMap, LabelReceiverMap};
 use std::sync::Arc;
 use tracing::info;
 

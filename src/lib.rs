@@ -1,7 +1,9 @@
 use crate::error::{CaptureError, Result};
 use async_channel::Receiver;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::RwLock;
 use tracing::info;
 

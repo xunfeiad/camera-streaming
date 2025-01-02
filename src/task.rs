@@ -1,8 +1,16 @@
-use crate::config::Configuration;
-use crate::parse::audio_parse::Audio;
-use crate::{parse::video_parse::VideoParse, IsEnd, LabelFlagMap, LabelReceiverMap};
+use crate::{
+    config::Configuration,
+    {
+        parse::{audio_parse::Audio, video_parse::VideoParse, ResponseError},
+        IsEnd, LabelFlagMap, LabelReceiverMap,
+    },
+};
 use std::sync::Arc;
-use tokio::net::TcpStream;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    runtime::Handle,
+};
+use tracing::{error, info};
 
 pub async fn encode_video_task(
     cli: Arc<Configuration>,
@@ -24,11 +32,6 @@ pub async fn encode_audio_task(
     audio.encode(stream, &cli, handle, is_end).await?;
     Ok(())
 }
-
-use crate::parse::ResponseError;
-use tokio::net::TcpListener;
-use tokio::runtime::Handle;
-use tracing::{error, info};
 
 pub async fn decode_video_task(
     addr: &str,

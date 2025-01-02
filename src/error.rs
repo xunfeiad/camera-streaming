@@ -1,6 +1,3 @@
-use opencv::Error as opencvError;
-use serde_yaml::Error;
-use std::io::Error as stdError;
 use thiserror::Error;
 use tokio::task::JoinError;
 
@@ -9,13 +6,13 @@ pub type Result<T, E = CaptureError> = std::result::Result<T, E>;
 #[derive(Error, Debug)]
 pub enum CaptureError {
     #[error("Connect failed")]
-    ConnectFailed(#[from] stdError),
+    ConnectFailed(#[from] std::io::Error),
     #[error("Opencv Error")]
-    OpencvError(#[from] opencvError),
+    OpencvError(#[from] opencv::Error),
     #[error("Tokio Error")]
     TokioError(#[from] JoinError),
     #[error("Parsing yaml file failed.")]
-    ParseYamlFileFailed(#[from] Error),
+    ParseYamlFileFailed(#[from] serde_yaml::Error),
     #[error("Incorrect password.")]
     ValidateFailed,
     #[error("NotTranscribe")]
