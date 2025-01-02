@@ -17,10 +17,14 @@ pub struct Configuration {
     pub password: Option<String>,
     #[arg(short = 'H', long, default_value = "127.0.0.1")]
     pub host: String,
-    #[arg(short = 's', long, value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54321)]
-    pub send_port: u16,
-    #[arg(short = 'r', long, value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54322)]
-    pub report_port: u16,
+    #[arg(long="vrp", value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54321)]
+    pub video_receiver_port: u16,
+    #[arg(long="vsp", value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54322)]
+    pub video_server_port: u16,
+    #[arg(long="arp", value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54323)]
+    pub audio_receiver_port: u16,
+    #[arg(long="asp", value_parser = clap::value_parser!(u16).range(1..), default_value_t = 54324)]
+    pub audio_server_port: u16,
     #[arg(
         short = 't',
         long,
@@ -78,6 +82,6 @@ pub fn test_parse_yaml_file() {
     println!("{:?}", configuration);
     assert_eq!(configuration.username.unwrap(), String::from("xunfei"));
     assert_eq!(configuration.password.unwrap(), String::from("xunfei"));
-    assert_eq!(configuration.host, String::from("127.0.0.1"));
-    assert_eq!(configuration.send_port, 54321);
+    assert_eq!(configuration.host, String::from("localhost"));
+    assert_eq!(configuration.video_receiver_port, 54321);
 }

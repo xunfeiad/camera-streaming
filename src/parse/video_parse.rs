@@ -1,6 +1,10 @@
+use crate::parse::ResponseError;
 use crate::{
-    config::Configuration, error::CaptureError, error::Result, Label, LabelFlagMap,
-    LabelReceiverMap,
+    config::Configuration,
+    constant::{BASE_RESPONSE, ERROR_RESPONSE},
+    error::CaptureError,
+    error::Result,
+    DeviceEnum, DeviceFlag, IsEnd, Label, LabelFlagMap, LabelReceiverMap,
 };
 use async_channel::{Receiver, Sender};
 use chrono::Local;
@@ -8,20 +12,16 @@ use opencv::{
     core::{Mat, Size, Vector},
     imgcodecs::{self, imencode, IMWRITE_JPEG_QUALITY},
     prelude::*,
+    videoio,
     videoio::{VideoCapture, VideoWriter},
 };
-use std::{net::SocketAddr, sync::atomic::AtomicBool, sync::Arc};
+use std::sync::atomic::Ordering;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::RwLock,
 };
 use tracing::{error, info};
-
-const BASE_RESPONSE: &[u8] =
-    b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
-
-const ERROR_RESPONSE: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n";
 
 pub struct VideoParse {
     pub protocol: Option<(char, char, char, char)>,
@@ -57,9 +57,9 @@ impl VideoParse {
         fps: Option<f64>,
     ) -> VideoParse {
         Self {
-            protocol: protocol.or_else(|| Some(('m', 'p', '4', 'v'))),
-            frame_size: frame_size.or_else(|| Some((1920, 1080))),
-            fps: fps.or_else(|| Some(60.0)),
+            protocol: protocol.or(Some(('m', 'p', '4', 'v'))),
+            frame_size: frame_size.or(Some((1920, 1080))),
+            fps: fps.or(Some(60.0)),
         }
     }
 
@@ -69,21 +69,22 @@ impl VideoParse {
         sender: Sender<Vec<u8>>,
         receiver: Receiver<Vec<u8>>,
         label_flag_map: Arc<LabelFlagMap>,
-        label_receiver_map: Arc<RwLock<LabelReceiverMap<Vec<u8>>>>,
+        label_receiver_map: Arc<LabelReceiverMap>,
     ) -> Result<()> {
         let mut size_buffer = [0; 2];
         stream.read_exact(&mut size_buffer).await?;
         let data_size = u16::from_be_bytes(size_buffer) as usize;
-        let mut buf = vec![];
-        buf.resize(data_size, 0);
+        let mut buf = vec![0; data_size];
+
         stream.read_exact(&mut buf).await?;
         let config: Configuration = serde_json::from_str(std::str::from_utf8(&buf)?)?;
         let label: Label = config.label.clone().into();
-        {
-            let mut label_receiver_map = label_receiver_map.write().await;
-            label_flag_map.insert(label, AtomicBool::new(false)).await;
-            label_receiver_map.0.insert(label, receiver);
-        }
+        label_flag_map
+            .insert(label, DeviceFlag::new(false, false))
+            .await?;
+        label_receiver_map
+            .insert(label, receiver, DeviceEnum::Video)
+            .await?;
         let mut writer = self.set_video_writer(stream.peer_addr().unwrap(), &config);
 
         info!("New connection from {}", stream.peer_addr().unwrap());
@@ -106,7 +107,8 @@ impl VideoParse {
                 error!("Error reading frame data: {}", e);
                 break;
             }
-            if label_flag_map.get_flag(&label).await {
+
+            if let (true, _) = label_flag_map.get_flag(&label).await? {
                 sender.send(buf.clone()).await?;
             }
             if let Some(ref mut writer) = writer {
@@ -143,7 +145,7 @@ impl VideoParse {
             _ => false,
         };
         if is_transcribe {
-            let filename = format!("{}_{}.mp4", remote, Local::now().timestamp().to_string());
+            let filename = format!("{}_{}.mp4", remote, Local::now().timestamp());
             let writer = VideoWriter::new(&filename, fourcc, config.fps, frame_size, true).ok()?;
             Some(writer)
         } else {
@@ -154,38 +156,49 @@ impl VideoParse {
     pub async fn encode(
         &self,
         mut stream: TcpStream,
-        mut cap: VideoCapture,
-        config: Configuration,
+        config: &Configuration,
+        is_end: Arc<IsEnd>,
     ) -> Result<()> {
         let mut frame = Mat::default();
-        let params = vec![IMWRITE_JPEG_QUALITY, config.quality.into()];
+        let params = vec![IMWRITE_JPEG_QUALITY, config.quality];
         let config = config.to_bytes()?;
+        let mut cap = VideoCapture::new(0, videoio::CAP_ANY)?;
+        let opened = VideoCapture::is_opened(&cap)?;
+        if !opened {
+            is_end.store(true, Ordering::Release);
+            panic!("Unable to open default camera!");
+        }
+
         // Send ConfigData
         let data = config.len() as u16;
         let size = data.to_be_bytes();
         stream.write_all(&size).await?;
-        stream.write_all(&config.as_slice()).await?;
+        stream.write_all(config.as_slice()).await?;
 
         loop {
-            cap.read(&mut frame)?;
+            if !is_end.load(Ordering::Acquire) {
+                cap.read(&mut frame)?;
 
-            // Encode the `JPEG` image format.
-            let mut buffer = Vector::new();
-            imencode(".jpg", &frame, &mut buffer, &Vector::from(params.clone()))?;
+                // Encode the `JPEG` image format.
+                let mut buffer = Vector::new();
+                imencode(".jpg", &frame, &mut buffer, &Vector::from(params.clone()))?;
 
-            // First, send the image size.
-            let buffer_size = buffer.len() as u32;
-            let size_bytes = buffer_size.to_be_bytes(); // 转换为大端字节序
+                // First, send the image size.
+                let buffer_size = buffer.len() as u32;
+                let size_bytes = buffer_size.to_be_bytes(); // 转换为大端字节序
 
-            if let Err(e) = stream.write_all(&size_bytes).await {
-                error!("Error occured: {}", e);
-                break;
-            }
+                if let Err(e) = stream.write_all(&size_bytes).await {
+                    is_end.store(true, Ordering::Release);
+                    error!("Error occured: {}", e);
+                    break;
+                }
 
-            // Second, send real image data.
-            if let Err(e) = stream.write_all(buffer.as_slice()).await {
-                error!("Error occured: {}", e);
-                break;
+                // Second, send real image data.
+                if let Err(e) = stream.write_all(buffer.as_slice()).await {
+                    is_end.store(true, Ordering::Release);
+                    error!("Error occured: {}", e);
+                    break;
+                }
             }
         }
         Ok(())
@@ -193,31 +206,43 @@ impl VideoParse {
 
     pub async fn send_to_web(
         &self,
-        mut stream: &mut TcpStream,
+        stream: &mut TcpStream,
         label_flag_map: Arc<LabelFlagMap>,
-        label_receiver_map: Arc<RwLock<LabelReceiverMap<Vec<u8>>>>,
+        label_receiver_map: Arc<LabelReceiverMap>,
     ) -> Result<()> {
         let mut peek_buf = [0u8; 1000];
-        peek_stream_data(&mut stream, &mut peek_buf).await?;
+        peek_stream_data(stream, &mut peek_buf).await?;
         let s: String = String::from_utf8_lossy(&peek_buf).to_string();
         let label = parse_label_data(&s)?;
-        if !label_flag_map.is_label(&label).await {
+        if !label_flag_map.is_labeled(&label).await {
             return Err(CaptureError::InvalidLabel("the label is not registered."));
         }
-        label_flag_map.set_flag_to_true(&label).await?;
+        label_flag_map
+            .set_flag(&label, true, DeviceEnum::Video)
+            .await?;
         stream.write_all(BASE_RESPONSE).await?;
         {
-            let label_receiver_map = label_receiver_map.read().await;
-            let receiver = label_receiver_map.get_receiver(&label)?;
-            while let Ok(msg) = receiver.recv().await {
-                let header = format!(
-                    "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                    msg.len()
-                );
-                let packet = [header.as_bytes(), msg.as_slice()].concat();
+            let label_receiver_map = label_receiver_map.0.read().await;
+            let receiver = label_receiver_map
+                .get(&label)
+                .ok_or(CaptureError::EmptyLabelName)?;
+            match &receiver.video_receiver {
+                Some(receiver) => {
+                    while let Ok(msg) = receiver.recv().await {
+                        let header = format!(
+                            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                            msg.len()
+                        );
+                        let packet = [header.as_bytes(), msg.as_slice()].concat();
 
-                if let Err(_e) = stream.write_all(&packet).await {
-                    break;
+                        if let Err(_e) = stream.write_all(&packet).await {
+                            receiver.close();
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    error!("Video identifier is closed.")
                 }
             }
         }
@@ -244,7 +269,7 @@ impl VideoParse {
     }
 }
 
-pub async fn peek_stream_data(stream: &mut TcpStream, buf: &mut [u8; 1000]) -> Result<()> {
+pub async fn peek_stream_data(stream: &TcpStream, buf: &mut [u8; 1000]) -> Result<()> {
     stream.peek(buf).await?;
     Ok(())
 }
@@ -258,23 +283,25 @@ pub fn parse_label_data(s: &str) -> Result<Label> {
         return Err(CaptureError::InvalidLabel("favicon.ico request."));
     }
     let mut label: Option<Label> = None;
-    querys.iter().for_each(|x| {
-        if x.name() == "label" {
-            let lab: Label = x.value().as_bytes().into();
+    querys.iter().for_each(|el| {
+        if el.name() == "label" {
+            let lab: Label = el.value().as_bytes().into();
             label = Some(lab)
         }
     });
     if label.is_none() {
-        headers.iter().for_each(|x| {
-            if x.name() == "label" {
-                let lab: Label = x.value().as_bytes().into();
+        headers.iter().for_each(|el| {
+            if el.name() == "label" {
+                let lab: Label = el.value().as_bytes().into();
                 label = Some(lab)
             }
         });
-    }
+    };
 
     label.ok_or(CaptureError::InvalidLabel("no label in request."))
 }
+
+impl ResponseError for VideoParse {}
 
 #[test]
 pub fn test_parse_label_data() -> Result<()> {

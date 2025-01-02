@@ -34,6 +34,14 @@ pub enum CaptureError {
     DuplicatedLabelError,
     #[error("Invalid label:{0}")]
     InvalidLabel(&'static str),
+    #[error("No audio device find.")]
+    NoAudioDeviceFindError,
+    #[error("Default stream config error: {0}")]
+    DefaultStreamConfigError(#[from] cpal::DefaultStreamConfigError),
+    #[error("Build stream error: {0}")]
+    BuildStreamError(#[from] cpal::BuildStreamError),
+    #[error("Play stream error: {0}")]
+    PlayStreamError(#[from] cpal::PlayStreamError),
 }
 
 impl CaptureError {
