@@ -1,6 +1,6 @@
-use ::camera_streaming::error::Result;
-use camera_streaming::config::Configuration;
 use camera_streaming::{
+    config::Configuration,
+    error::Result,
     task::{encode_audio_task, encode_video_task},
     IsEnd,
 };

@@ -1,16 +1,18 @@
-use crate::config::Configuration;
-use crate::error::{CaptureError, Result};
-use crate::parse::video_parse::{parse_label_data, peek_stream_data};
-use crate::parse::ResponseError;
-use crate::{DeviceEnum, DeviceFlag, IsEnd, Label, LabelFlagMap, LabelReceiverMap};
+use crate::{
+    config::Configuration,
+    error::{CaptureError, Result},
+    parse::video_parse::{parse_label_data, peek_stream_data},
+    parse::ResponseError,
+    DeviceEnum, DeviceFlag, IsEnd, Label, LabelFlagMap, LabelReceiverMap,
+};
 use async_channel::{Receiver, Sender};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::runtime::Handle;
+use std::{sync::atomic::Ordering, sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    runtime::Handle,
+};
 use tracing::{error, info};
 
 #[derive(Default)]
